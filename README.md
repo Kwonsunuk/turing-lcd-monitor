@@ -75,6 +75,7 @@ docker run -d \
   --restart unless-stopped \
   --privileged \
   --pid host \
+  --network host \
   -v /dev/ttyACM0:/dev/ttyACM0 \
   -v /mnt:/mnt:ro \
   usb-lcd
