@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import serial, struct, time, psutil, os, sys
+import serial, struct, time, psutil, os, sys, subprocess
 from PIL import Image, ImageDraw, ImageFont
 
 PORT = "/dev/ttyACM0"
@@ -94,8 +94,27 @@ def main():
         try:
             cpu = psutil.cpu_percent(interval=1)
             mem = psutil.virtual_memory()
-            sam = psutil.disk_usage("/mnt/StorageSamsung") if os.path.exists("/mnt/StorageSamsung") else None
-            sea = psutil.disk_usage("/mnt/StorageSeagate") if os.path.exists("/mnt/StorageSeagate") else None
+
+            # ZFS pool usage via /proc (works inside container with --pid host)
+            def zfs_usage(pool):
+                try:
+                    with open("/proc/spl/kstat/zfs/" + pool + "/objset-0x0", "r") as f:
+                        pass  # just checking existence
+                except:
+                    pass
+                # Read from host's zfs via nsenter (pid host)
+                try:
+                    r = subprocess.run(["nsenter", "-t", "1", "-m", "--", "zfs", "list", "-Hp", "-o", "used,avail", pool],
+                                       capture_output=True, text=True, timeout=5)
+                    if r.returncode == 0:
+                        used, avail = r.stdout.strip().split()
+                        used, avail = int(used), int(avail)
+                        total = used + avail
+                        return type('obj', (object,), {'used': used, 'total': total, 'percent': (used/total)*100 if total else 0})()
+                except: pass
+                return None
+            sam = zfs_usage("StorageSamsung")
+            sea = zfs_usage("StorageSeagate")
             temps = {}
             try:
                 for n, es in psutil.sensors_temperatures().items():
@@ -155,7 +174,7 @@ def main():
             if sea:
                 d.text((15, y0), f"Seagate  {sea.percent:.0f}%", fill=(255, 255, 255), font=sfont)
                 draw_bar(d, 140, y0 + 2, 325, 16, sea.percent, (40, 120, 255))
-                d.text((140, y0 + 20), f"{sam.used//(1024**3)}GB / {sam.total//(1024**3)}GB", fill=(100, 100, 120), font=sfont)
+                d.text((140, y0 + 20), f"{sea.used//(1024**3)}GB / {sea.total//(1024**3)}GB", fill=(100, 100, 120), font=sfont)
 
             # Divider
             d.line([(15, 186), (465, 186)], fill=(50, 50, 70))
