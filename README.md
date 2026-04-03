@@ -1,5 +1,7 @@
 # Turing Smart Screen - TrueNAS System Monitor
 
+**[한국어 문서 (Korean)](README.ko.md)**
+
 A Python script that displays real-time system stats on a **3.5" USB LCD monitor** (Turing Smart Screen / USB35INCHIPSV2) connected to a TrueNAS server.
 
 ![demo](screenshot.png)
