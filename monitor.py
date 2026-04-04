@@ -113,14 +113,52 @@ def main():
                         return type('obj', (object,), {'used': used, 'total': total, 'percent': (used/total)*100 if total else 0})()
                 except: pass
                 return None
-            sam = zfs_usage("StorageSamsung")
-            sea = zfs_usage("StorageSeagate")
-            temps = {}
+            # Auto-detect all ZFS pools (excluding boot-pool)
+            pools = {}
             try:
-                for n, es in psutil.sensors_temperatures().items():
-                    for e in es:
-                        if e.current > 0:
-                            temps[e.label or n] = e.current
+                r = subprocess.run(["nsenter", "-t", "1", "-m", "--", "zfs", "list", "-Hp", "-o", "name,used,avail", "-d", "0"],
+                                   capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    for line in r.stdout.strip().split("\n"):
+                        parts = line.split("\t")
+                        if len(parts) == 3 and parts[0] != "boot-pool":
+                            name, used, avail = parts[0], int(parts[1]), int(parts[2])
+                            total = used + avail
+                            pools[name] = type('obj', (object,), {'used': used, 'total': total, 'percent': (used/total)*100 if total else 0})()
+            except: pass
+            # Temperature: CPU + disk temps with proper labels
+            cpu_temp = None
+            disk_temps = {}
+            try:
+                for name, entries in psutil.sensors_temperatures().items():
+                    if name == "coretemp":
+                        for e in entries:
+                            if "Package" in (e.label or ""):
+                                cpu_temp = e.current
+                    elif name == "drivetemp":
+                        # Map by hwmon index to disk name
+                        pass
+                # Read disk temps with labels via sysfs
+                import glob
+                for hwmon in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+                    try:
+                        n = open(hwmon + "/name").read().strip()
+                        if n == "drivetemp":
+                            temp = int(open(hwmon + "/temp1_input").read().strip()) / 1000
+                            dev_path = os.path.realpath(hwmon + "/device")
+                            blocks = os.listdir(dev_path + "/block") if os.path.isdir(dev_path + "/block") else []
+                            blk = blocks[0] if blocks else "?"
+                            label_map = {"sda": "Samsung", "sdb": "Seagate", "sdc": "SSD"}
+                            disk_temps[label_map.get(blk, blk)] = temp
+                    except: pass
+                if cpu_temp is None:
+                    for name, entries in psutil.sensors_temperatures().items():
+                        if name == "coretemp":
+                            for e in entries:
+                                if e.current > 0:
+                                    cpu_temp = e.current
+                                    break
+                            break
             except: pass
             net = psutil.net_io_counters()
             now = time.time()
@@ -162,38 +200,37 @@ def main():
             # Divider
             d.line([(15, 102), (465, 102)], fill=(50, 50, 70))
 
-            # Samsung
+            # Storage pools (auto-detected)
             y0 = 110
-            if sam:
-                d.text((15, y0), f"Samsung  {sam.percent:.0f}%", fill=(255, 255, 255), font=sfont)
-                draw_bar(d, 140, y0 + 2, 325, 16, sam.percent, (40, 120, 255))
-                d.text((140, y0 + 20), f"{sam.used//(1024**3)}GB / {sam.total//(1024**3)}GB", fill=(100, 100, 120), font=sfont)
-
-            # Seagate
-            y0 = 148
-            if sea:
-                d.text((15, y0), f"Seagate  {sea.percent:.0f}%", fill=(255, 255, 255), font=sfont)
-                draw_bar(d, 140, y0 + 2, 325, 16, sea.percent, (40, 120, 255))
-                d.text((140, y0 + 20), f"{sea.used//(1024**3)}GB / {sea.total//(1024**3)}GB", fill=(100, 100, 120), font=sfont)
+            for pname, pdata in pools.items():
+                short = pname.replace("Storage", "")
+                d.text((15, y0), f"{short}  {pdata.percent:.0f}%", fill=(255, 255, 255), font=sfont)
+                draw_bar(d, 140, y0 + 2, 325, 16, pdata.percent, (40, 120, 255))
+                d.text((140, y0 + 20), f"{pdata.used//(1024**3)}GB / {pdata.total//(1024**3)}GB", fill=(100, 100, 120), font=sfont)
+                y0 += 38
 
             # Divider
-            d.line([(15, 186), (465, 186)], fill=(50, 50, 70))
+            d.line([(15, y0), (465, y0)], fill=(50, 50, 70))
 
             # Temperature
-            y0 = 194
+            y0 += 8
             d.text((15, y0), "TEMP", fill=(100, 180, 255), font=font)
-            if temps:
-                tx = 80
-                for name, val in list(temps.items())[:4]:
-                    tc = (0, 200, 80) if val < 50 else ((255, 200, 0) if val < 70 else (255, 60, 60))
-                    d.text((tx, y0), f"{name[:8]}:{val:.0f}C", fill=tc, font=sfont)
-                    tx += 100
+            tx = 80
+            if cpu_temp:
+                tc = (0, 200, 80) if cpu_temp < 50 else ((255, 200, 0) if cpu_temp < 70 else (255, 60, 60))
+                d.text((tx, y0), f"CPU:{cpu_temp:.0f}C", fill=tc, font=sfont)
+                tx += 95
+            for dname, dval in disk_temps.items():
+                tc = (0, 200, 80) if dval < 45 else ((255, 200, 0) if dval < 55 else (255, 60, 60))
+                d.text((tx, y0), f"{dname}:{dval:.0f}C", fill=tc, font=sfont)
+                tx += 105
 
             # Divider
-            d.line([(15, 220), (465, 220)], fill=(50, 50, 70))
+            y0 += 26
+            d.line([(15, y0), (465, y0)], fill=(50, 50, 70))
 
             # Network - real-time speed
-            y0 = 228
+            y0 += 8
             up_color = (0, 200, 80) if up_speed < 10*1024*1024 else (255, 200, 0)
             dn_color = (0, 200, 80) if down_speed < 10*1024*1024 else (255, 200, 0)
             d.text((15, y0), "UP", fill=(100, 180, 255), font=sfont)
@@ -202,15 +239,15 @@ def main():
             d.text((250, y0), fmt_speed(down_speed), fill=dn_color, font=sfont)
 
             # Total traffic
-            y0 = 248
+            y0 += 20
             d.text((15, y0), f"Total TX: {net.bytes_sent//(1024**2)}MB  RX: {net.bytes_recv//(1024**2)}MB", fill=(80, 80, 100), font=sfont)
 
             # Footer
-            y0 = 272
+            y0 = max(y0 + 24, 272)
             d.line([(15, y0), (465, y0)], fill=(50, 50, 70))
-            d.text((15, 282), "172.30.1.79", fill=(80, 80, 100), font=sfont)
-            d.text((200, 282), "TrueNAS 25.10", fill=(80, 80, 100), font=sfont)
-            d.text((370, 282), "N100", fill=(80, 80, 100), font=sfont)
+            d.text((15, y0 + 10), "172.30.1.79", fill=(80, 80, 100), font=sfont)
+            d.text((200, y0 + 10), "TrueNAS 25.10", fill=(80, 80, 100), font=sfont)
+            d.text((370, y0 + 10), "N100", fill=(80, 80, 100), font=sfont)
 
             display_image(ser, img, W, H)
             print(f"OK CPU:{cpu:.0f}% MEM:{mem.percent:.0f}%")
